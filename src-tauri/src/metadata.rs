@@ -102,6 +102,18 @@ pub async fn run_exiftool_batch(
             .map_err(|e| format!("failed to run exiftool: {e}"))?;
 
         let stdout = String::from_utf8_lossy(&output.stdout);
+        if stdout.trim().is_empty() {
+            // ExifTool always prints a JSON array for files it was given, so
+            // empty output means the process itself failed to start - e.g.
+            // the Windows launcher couldn't find its `exiftool_files` folder.
+            return Err(format!(
+                "exiftool failed to start (exit code {:?}). Check the sidecar \
+                 setup in the README (on Windows, `exiftool_files` must sit next \
+                 to `exiftool.exe`). stderr: {}",
+                output.status.code(),
+                String::from_utf8_lossy(&output.stderr).trim()
+            ));
+        }
         let parsed: Vec<Value> = serde_json::from_str(&stdout).map_err(|e| {
             format!(
                 "exiftool produced unparseable output ({e}); stderr: {}",

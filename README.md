@@ -42,7 +42,7 @@ Place these two files in `src-tauri/binaries/` (see
 
 | Platform | `exiftool-<triple>` | `ffmpeg-<triple>` |
 | --- | --- | --- |
-| Windows | `exiftool-x86_64-pc-windows-msvc.exe` | `ffmpeg-x86_64-pc-windows-msvc.exe` |
+| Windows | `exiftool-x86_64-pc-windows-msvc.exe` + `exiftool_files\` folder | `ffmpeg-x86_64-pc-windows-msvc.exe` |
 | macOS (Intel) | `exiftool-x86_64-apple-darwin` | `ffmpeg-x86_64-apple-darwin` |
 | macOS (Apple Silicon) | `exiftool-aarch64-apple-darwin` | `ffmpeg-aarch64-apple-darwin` |
 | Linux | `exiftool-x86_64-unknown-linux-gnu` | `ffmpeg-x86_64-unknown-linux-gnu` |
@@ -50,8 +50,20 @@ Place these two files in `src-tauri/binaries/` (see
 Where to get them:
 
 - **ExifTool**: https://exiftool.org
-  - Windows: download the standalone Windows executable and rename it to
-    `exiftool-<triple>.exe` (the zip ships it as `exiftool(-k).exe`).
+  - Windows: download the Windows zip. Current releases contain
+    two things, and you need **both**:
+    1. `exiftool(-k).exe` - rename it to `exiftool-x86_64-pc-windows-msvc.exe`
+       (it's only a small launcher).
+    2. the `exiftool_files\` folder (bundled Perl runtime + ExifTool
+       libraries) - copy the whole folder, unrenamed, to
+       `src-tauri\binaries\exiftool_files\`.
+
+    The launcher looks for `exiftool_files\` next to wherever it runs from.
+    `src-tauri/tauri.windows.conf.json` bundles that folder as a resource,
+    which places it next to `exiftool.exe` both in `target\debug` /
+    `target\release` during development and in the installed app. Without
+    it, imports fail with "exiftool failed to start ... Could not find
+    ...\exiftool_files\perl5*.dll".
   - macOS/Linux: ExifTool ships as a Perl script (`exiftool`) plus a `lib/`
     directory of Perl modules - it is **not** a single self-contained
     binary on these platforms. The simplest reliable option is to install
