@@ -7,7 +7,8 @@ export function importFolder(folderPath: string): Promise<ImportOutcome> {
   return invoke("import_folder", { folderPath });
 }
 
-export function saveProject(project: Project, path: string): Promise<void> {
+/** Saves the project and returns it with `modifiedAt` updated. */
+export function saveProject(project: Project, path: string): Promise<Project> {
   return invoke("save_project", { project, path });
 }
 

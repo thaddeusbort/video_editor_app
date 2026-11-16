@@ -78,11 +78,14 @@ pub struct ExtractedFields {
 /// Runs `exiftool -json -n -G0` over all paths (chunked) and returns, for
 /// each input path that ExifTool reported on, its raw JSON metadata object.
 /// Paths ExifTool couldn't read at all simply won't have an entry.
+/// `on_progress` is called after each batch with the number of files done.
 pub async fn run_exiftool_batch(
     app: &AppHandle,
     paths: &[PathBuf],
+    mut on_progress: impl FnMut(usize),
 ) -> Result<HashMap<String, Value>, String> {
     let mut results = HashMap::new();
+    let mut done = 0;
 
     for chunk in paths.chunks(BATCH_SIZE) {
         let mut args: Vec<String> = vec![
@@ -126,6 +129,9 @@ pub async fn run_exiftool_batch(
                 results.insert(source_file.to_string(), entry);
             }
         }
+
+        done += chunk.len();
+        on_progress(done);
     }
 
     Ok(results)

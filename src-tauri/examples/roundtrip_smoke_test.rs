@@ -7,8 +7,15 @@ fn main() {
         .expect("load_project should parse a freshly-imported project");
 
     let tmp_out = format!("{path}.roundtrip.json");
-    video_editor_app_lib::commands::save_project(project.clone(), tmp_out.clone())
+    let saved = video_editor_app_lib::commands::save_project(project.clone(), tmp_out.clone())
         .expect("save_project should succeed");
+    assert_ne!(saved.modified_at, project.modified_at, "save should stamp modifiedAt");
+    assert_eq!(saved.created_at, project.created_at, "save must not touch createdAt");
+    assert!(
+        !std::path::Path::new(&format!("{tmp_out}.tmp")).exists(),
+        "atomic save should not leave its temp file behind"
+    );
+    println!("save stamped modifiedAt: {} -> {}", project.modified_at, saved.modified_at);
     let reloaded = video_editor_app_lib::commands::load_project(tmp_out)
         .expect("load_project should parse what save_project just wrote");
 

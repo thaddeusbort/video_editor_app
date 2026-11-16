@@ -6,6 +6,8 @@
 //! Not part of the shipped app; run with:
 //!   IMPORT_SMOKE_TEST_DIR=/path/to/videos cargo run --example import_smoke_test
 
+use tauri::Listener;
+
 fn main() {
     let folder = std::env::var("IMPORT_SMOKE_TEST_DIR")
         .expect("set IMPORT_SMOKE_TEST_DIR to a folder of test videos");
@@ -15,6 +17,10 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .setup(move |app| {
             let handle = app.handle().clone();
+            // Progress goes to stderr so stdout stays pure JSON.
+            handle.listen_any("import-progress", |event| {
+                eprintln!("progress: {}", event.payload());
+            });
             let folder = folder.clone();
             tauri::async_runtime::spawn(async move {
                 let outcome = video_editor_app_lib::commands::import_folder(handle.clone(), folder)

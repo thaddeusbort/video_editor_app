@@ -1,10 +1,11 @@
-# Vacation Video Importer (step 1: import & metadata)
+# Vacation Video Importer
 
 A Tauri v2 + React + TypeScript desktop app for culling and organizing
-vacation videos. This is **step 1 only**: given a folder, recursively find
-video files, extract metadata with ExifTool, grab a poster-frame thumbnail
-with FFmpeg, and write a versioned project JSON. There is no culling UI,
-trimming, or export yet.
+vacation videos. Currently at **step 1 (import & metadata)**: given a
+folder, recursively find video files, extract metadata with ExifTool, grab
+a poster-frame thumbnail with FFmpeg, and save/open the result as a
+versioned project JSON. Culling, trimming and export come later - see
+[Roadmap](#roadmap).
 
 All filesystem access and process spawning happens in Rust (`src-tauri/src`).
 The React frontend (`src/`) only calls Tauri commands and renders results.
@@ -110,7 +111,7 @@ correctly without clicking through the UI):
 # Runs a real import against a folder and prints the resulting ImportOutcome JSON
 IMPORT_SMOKE_TEST_DIR=/path/to/some/videos cargo run --example import_smoke_test --manifest-path src-tauri/Cargo.toml
 
-# Round-trips save_project/load_project and checks schema-version rejection
+# Round-trips save_project/load_project; checks modifiedAt stamping and schema-version rejection
 PROJECT_JSON_PATH=/path/to/project.json cargo run --example roundtrip_smoke_test --manifest-path src-tauri/Cargo.toml
 ```
 
@@ -134,10 +135,69 @@ PROJECT_JSON_PATH=/path/to/project.json cargo run --example roundtrip_smoke_test
   (extension list centralized in `src-tauri/src/extensions.rs`). A bad file
   never aborts the whole import - problems are collected into
   `ImportOutcome.errors` and shown in the UI.
+- **Import progress**: `import_folder` emits an `import-progress` event
+  (`ImportProgress` in both type files) as it moves through scanning,
+  fingerprinting, metadata and thumbnails; the UI shows it as a step label
+  and progress bar.
+- **Saving**: `save_project` stamps `modifiedAt` and writes via a temp file
+  plus rename, so an interrupted save can't leave a half-written project.
+  `load_project` rejects files whose `schemaVersion` it doesn't support.
 
-## Known limitations (intentional, for this step)
+## Roadmap
 
-- No culling, trimming, or export UI yet.
-- CSP is disabled (`security.csp: null`) for simplicity; tighten this
-  before shipping a production build.
-- The frontend has no styling effort beyond a plain HTML table, by design.
+A proposed plan, not a commitment - items marked **(decide)** need a call
+before work starts. The data model already reserves fields for steps 2-3
+(`include`, `deviceNicknameId`, `manualOverrides`, `inOutRanges`).
+
+### Step 1 - Import & metadata (done)
+
+- [x] Recursive folder scan with an editable extension list
+- [x] Batch ExifTool metadata extraction with a central tag mapping;
+      full raw metadata kept per file
+- [x] Cached poster-frame thumbnails via FFmpeg, keyed by content hash
+- [x] Versioned project file (schema v1); save, save as, open
+- [x] Per-file error reporting; import progress indicator
+- [x] ExifTool and FFmpeg bundled as sidecars (incl. Windows `exiftool_files`)
+
+### Step 2 - Culling & organizing
+
+- [ ] Clip grid sorted by capture time and grouped by day, replacing the table
+- [ ] Keep/reject (`include`) with keyboard shortcuts for fast culling
+- [ ] Clip preview player. Needs the asset-protocol scope widened from the
+      thumbnail cache to source video folders **(decide: scope approach)**
+- [ ] Device nicknames ("Drone", "Sam's phone"): a device list on `Project`
+      referenced by `Clip.deviceNicknameId`. First schema bump to v2,
+      with `load_project` migrating v1 files instead of rejecting them
+- [ ] Manual date/device overrides, including "shift every clip from this
+      device by N hours" for cameras with a wrong clock
+- [ ] Unsaved-changes tracking and a prompt before an import/open replaces
+      the current project
+
+### Step 3 - Trimming
+
+- [ ] Set in/out points in the player; several ranges per clip
+- [ ] Smooth scrubbing for 4K/HEVC/drone footage, likely via low-res proxy
+      files generated in the background **(decide: proxies or not)**
+
+### Step 4 - Export
+
+- [ ] Render the included ranges in capture order with FFmpeg: stream copy
+      when codecs match, re-encode otherwise, with progress events
+- [ ] Output shape **(decide)**: one movie, one file per day, and/or an
+      edit list for another editor
+
+### Cross-cutting / known issues
+
+- Capture times are shown converted to the viewer's timezone; they should
+  show the local time as recorded on the trip.
+- Add a folder to an existing project, or re-import, matching files by hash
+  so culling decisions survive and moved files are found again.
+- Thumbnails live in a per-machine cache, so a project opened on another
+  computer shows none; regenerate missing ones on open.
+- Import fingerprints and thumbnails files one at a time; parallelize
+  thumbnail extraction and add a cancel button for large folders.
+- macOS/Linux still rely on the system's Perl for ExifTool; bundle a
+  self-contained build before distributing.
+- CSP is disabled (`security.csp: null`); tighten before shipping.
+- TS and Rust types are synced by hand; consider generating the TS side
+  from Rust (e.g. ts-rs or specta) **(decide: worth the dependency?)**

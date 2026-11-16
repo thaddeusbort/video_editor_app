@@ -75,3 +75,16 @@ export interface ImportOutcome {
   project: Project;
   errors: ImportFileError[];
 }
+
+/** Event `import_folder` emits while it works. Mirrors `IMPORT_PROGRESS_EVENT` in models.rs. */
+export const IMPORT_PROGRESS_EVENT = "import-progress";
+
+/** Import stages, in the order they run. */
+export type ImportPhase = "scanning" | "hashing" | "metadata" | "thumbnails";
+
+/** Payload of `IMPORT_PROGRESS_EVENT`; `total` is 0 while scanning. */
+export interface ImportProgress {
+  phase: ImportPhase;
+  current: number;
+  total: number;
+}

@@ -96,3 +96,27 @@ pub struct ImportOutcome {
     pub project: Project,
     pub errors: Vec<ImportFileError>,
 }
+
+/// Name of the event `import_folder` emits as it works through a folder.
+/// Mirrored as `IMPORT_PROGRESS_EVENT` in `src/types/project.ts`.
+pub const IMPORT_PROGRESS_EVENT: &str = "import-progress";
+
+/// The import stage currently running, in the order they happen.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ImportPhase {
+    Scanning,
+    Hashing,
+    Metadata,
+    Thumbnails,
+}
+
+/// Payload of `IMPORT_PROGRESS_EVENT`. `current`/`total` count files within
+/// the current phase (`total` is 0 while scanning, since it isn't known yet).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportProgress {
+    pub phase: ImportPhase,
+    pub current: usize,
+    pub total: usize,
+}

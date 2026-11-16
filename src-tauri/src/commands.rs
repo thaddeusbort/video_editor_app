@@ -5,14 +5,15 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 use uuid::Uuid;
 
 use crate::extensions;
 use crate::hashing;
 use crate::metadata;
 use crate::models::{
-    Clip, ImportFileError, ImportOutcome, InOutRange, Project, SourceFile, SCHEMA_VERSION,
+    Clip, ImportFileError, ImportOutcome, ImportPhase, ImportProgress, InOutRange, Project,
+    SourceFile, IMPORT_PROGRESS_EVENT, SCHEMA_VERSION,
 };
 use crate::scanner;
 use crate::thumbnails;
@@ -22,11 +23,24 @@ pub fn get_supported_extensions() -> Vec<String> {
     extensions::get_supported_extensions()
 }
 
+/// Writes the project to `path`, stamping `modifiedAt` with the current
+/// time, and returns the project as saved so the frontend picks up the new
+/// timestamp.
 #[tauri::command]
-pub fn save_project(project: Project, path: String) -> Result<(), String> {
+pub fn save_project(mut project: Project, path: String) -> Result<Project, String> {
+    project.modified_at = chrono::Utc::now().to_rfc3339();
     let json = serde_json::to_string_pretty(&project)
         .map_err(|e| format!("failed to serialize project: {e}"))?;
-    std::fs::write(&path, json).map_err(|e| format!("failed to write '{path}': {e}"))
+
+    // Write to a sibling temp file, then rename over the target, so a crash
+    // or full disk mid-write can't leave a half-written project file behind.
+    let tmp_path = format!("{path}.tmp");
+    std::fs::write(&tmp_path, json).map_err(|e| format!("failed to write '{tmp_path}': {e}"))?;
+    std::fs::rename(&tmp_path, &path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp_path);
+        format!("failed to replace '{path}': {e}")
+    })?;
+    Ok(project)
 }
 
 #[tauri::command]
@@ -51,6 +65,19 @@ pub async fn import_folder(app: AppHandle, folder_path: String) -> Result<Import
         return Err(format!("'{folder_path}' is not a directory"));
     }
 
+    let report = |phase: ImportPhase, current: usize, total: usize| {
+        // Progress is best-effort: a failed emit must never fail the import.
+        let _ = app.emit(
+            IMPORT_PROGRESS_EVENT,
+            ImportProgress {
+                phase,
+                current,
+                total,
+            },
+        );
+    };
+
+    report(ImportPhase::Scanning, 0, 0);
     let video_paths =
         scanner::find_video_files(&root).map_err(|e| format!("failed to scan '{folder_path}': {e}"))?;
 
@@ -60,7 +87,8 @@ pub async fn import_folder(app: AppHandle, folder_path: String) -> Result<Import
     // can't even be opened is reported and dropped from the rest of the
     // pipeline rather than aborting the whole import.
     let mut hashes: HashMap<PathBuf, String> = HashMap::new();
-    for path in &video_paths {
+    for (i, path) in video_paths.iter().enumerate() {
+        report(ImportPhase::Hashing, i, video_paths.len());
         match hashing::partial_hash(path) {
             Ok(hash) => {
                 hashes.insert(path.clone(), hash);
@@ -77,14 +105,20 @@ pub async fn import_folder(app: AppHandle, folder_path: String) -> Result<Import
         .cloned()
         .collect();
 
-    let raw_metadata_by_path = metadata::run_exiftool_batch(&app, &readable_paths).await?;
+    let total = readable_paths.len();
+    report(ImportPhase::Metadata, 0, total);
+    let raw_metadata_by_path = metadata::run_exiftool_batch(&app, &readable_paths, |done| {
+        report(ImportPhase::Metadata, done, total)
+    })
+    .await?;
 
     let cache_dir = thumbnail_cache_dir(&app)?;
 
     let mut source_files = Vec::with_capacity(readable_paths.len());
     let mut clips = Vec::with_capacity(readable_paths.len());
 
-    for path in &readable_paths {
+    for (i, path) in readable_paths.iter().enumerate() {
+        report(ImportPhase::Thumbnails, i, total);
         let hash = hashes.get(path).expect("hashed above").clone();
         let path_key = metadata::absolute_path_key(path);
         let filename = path
