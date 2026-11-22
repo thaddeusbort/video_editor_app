@@ -120,17 +120,17 @@ pub async fn import_folder(app: AppHandle, folder_path: String) -> Result<Import
     for (i, path) in readable_paths.iter().enumerate() {
         report(ImportPhase::Thumbnails, i, total);
         let hash = hashes.get(path).expect("hashed above").clone();
-        let path_key = metadata::absolute_path_key(path);
+        let path_str = metadata::path_string(path);
         let filename = path
             .file_name()
             .map(|f| f.to_string_lossy().into_owned())
             .unwrap_or_default();
 
-        let raw = match raw_metadata_by_path.get(&path_key) {
+        let raw = match raw_metadata_by_path.get(path) {
             Some(raw) => {
                 if let Some(err_msg) = raw.get("Error").and_then(|v| v.as_str()) {
                     errors.push(ImportFileError {
-                        path: path_key.clone(),
+                        path: path_str.clone(),
                         message: format!("exiftool: {err_msg}"),
                     });
                 }
@@ -138,7 +138,7 @@ pub async fn import_folder(app: AppHandle, folder_path: String) -> Result<Import
             }
             None => {
                 errors.push(ImportFileError {
-                    path: path_key.clone(),
+                    path: path_str.clone(),
                     message: "exiftool returned no metadata for this file".into(),
                 });
                 serde_json::json!({})
@@ -152,7 +152,7 @@ pub async fn import_folder(app: AppHandle, folder_path: String) -> Result<Import
                 Ok(p) => Some(p.to_string_lossy().into_owned()),
                 Err(e) => {
                     errors.push(ImportFileError {
-                        path: path_key.clone(),
+                        path: path_str.clone(),
                         message: format!("thumbnail extraction failed: {e}"),
                     });
                     None
@@ -171,7 +171,7 @@ pub async fn import_folder(app: AppHandle, folder_path: String) -> Result<Import
 
         source_files.push(SourceFile {
             id: source_file_id.clone(),
-            path: path_key,
+            path: path_str,
             hash,
             filename,
             duration_seconds: fields.duration_seconds,

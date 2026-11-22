@@ -75,25 +75,42 @@ pub struct ExtractedFields {
     pub fps: Option<f64>,
 }
 
-/// Runs `exiftool -json -n -G0` over all paths (chunked) and returns, for
-/// each input path that ExifTool reported on, its raw JSON metadata object.
+/// Runs `exiftool -json -n -G0` over all paths (chunked) and returns each
+/// input path's raw JSON metadata object, keyed by that same input path.
 /// Paths ExifTool couldn't read at all simply won't have an entry.
 /// `on_progress` is called after each batch with the number of files done.
 pub async fn run_exiftool_batch(
     app: &AppHandle,
     paths: &[PathBuf],
     mut on_progress: impl FnMut(usize),
-) -> Result<HashMap<String, Value>, String> {
+) -> Result<HashMap<PathBuf, Value>, String> {
     let mut results = HashMap::new();
     let mut done = 0;
 
     for chunk in paths.chunks(BATCH_SIZE) {
-        let mut args: Vec<String> = vec![
+        // ExifTool reports each file under its own spelling of the path
+        // (`SourceFile`), so look the input path back up by that spelling.
+        let by_source_key: HashMap<String, &PathBuf> = chunk
+            .iter()
+            .map(|p| (source_file_key(&p.to_string_lossy(), cfg!(windows)), p))
+            .collect();
+
+        // File names go in a UTF-8 argfile (`-@`) rather than on the command
+        // line: on Windows, command-line file names are converted to the
+        // system code page, which mangles non-ASCII names (e.g. "Māori"),
+        // and the command line has a ~32K character limit. One argument per
+        // line; ExifTool strips leading whitespace and skips lines starting
+        // with '#', neither of which an absolute path can start with.
+        let argfile = TempArgFile::write(chunk)?;
+        let args: Vec<String> = vec![
             "-json".into(),
             "-n".into(),  // numeric output (decimal GPS, seconds, etc.)
             "-G0".into(), // group-prefix tag names, e.g. "QuickTime:CreateDate"
+            "-charset".into(),
+            "filename=utf8".into(), // the argfile is UTF-8
+            "-@".into(),
+            argfile.path.to_string_lossy().into_owned(),
         ];
-        args.extend(chunk.iter().map(|p| p.to_string_lossy().into_owned()));
 
         let output = app
             .shell()
@@ -103,6 +120,7 @@ pub async fn run_exiftool_batch(
             .output()
             .await
             .map_err(|e| format!("failed to run exiftool: {e}"))?;
+        drop(argfile);
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         if stdout.trim().is_empty() {
@@ -125,8 +143,12 @@ pub async fn run_exiftool_batch(
         })?;
 
         for entry in parsed {
-            if let Some(source_file) = entry.get("SourceFile").and_then(|v| v.as_str()) {
-                results.insert(source_file.to_string(), entry);
+            let input_path = entry
+                .get("SourceFile")
+                .and_then(|v| v.as_str())
+                .and_then(|sf| by_source_key.get(&source_file_key(sf, cfg!(windows))));
+            if let Some(input_path) = input_path {
+                results.insert((*input_path).clone(), entry);
             }
         }
 
@@ -135,6 +157,45 @@ pub async fn run_exiftool_batch(
     }
 
     Ok(results)
+}
+
+/// Normalizes a path to the form ExifTool reports it in `SourceFile`.
+/// On Windows, ExifTool rewrites every input path to use forward slashes
+/// (`tr/\\/\//` on all file arguments in the `exiftool` script), so
+/// `D:\Videos\a.mp4` comes back as `D:/Videos/a.mp4`. Elsewhere a backslash
+/// is an ordinary filename character and is left alone. `windows` is a
+/// parameter (not `cfg!`) only so both behaviors can be unit tested.
+fn source_file_key(path: &str, windows: bool) -> String {
+    if windows {
+        path.replace('\\', "/")
+    } else {
+        path.to_string()
+    }
+}
+
+/// A UTF-8 ExifTool argfile listing one path per line, deleted on drop.
+struct TempArgFile {
+    path: PathBuf,
+}
+
+impl TempArgFile {
+    fn write(paths: &[PathBuf]) -> Result<Self, String> {
+        let path = std::env::temp_dir().join(format!("exiftool-args-{}.txt", uuid::Uuid::new_v4()));
+        let mut contents = String::new();
+        for p in paths {
+            contents.push_str(&p.to_string_lossy());
+            contents.push('\n');
+        }
+        std::fs::write(&path, contents)
+            .map_err(|e| format!("failed to write exiftool argfile '{}': {e}", path.display()))?;
+        Ok(Self { path })
+    }
+}
+
+impl Drop for TempArgFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
 }
 
 /// Maps a raw ExifTool JSON object to the subset of fields we track on
@@ -217,7 +278,8 @@ fn exiftool_date_to_iso8601(raw: &str) -> Option<String> {
     Some(format!("{date_part}T{time_and_zone}"))
 }
 
-pub fn absolute_path_key(path: &Path) -> String {
+/// The path as stored in `SourceFile::path` and shown to the user.
+pub fn path_string(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
 
@@ -225,6 +287,36 @@ pub fn absolute_path_key(path: &Path) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    // Regression: on Windows every file was reported as "exiftool returned
+    // no metadata" because ExifTool reports `D:\a\b.mp4` as `D:/a/b.mp4`.
+    #[test]
+    fn source_file_key_matches_exiftool_windows_spelling() {
+        let ours = source_file_key(r"D:\Videos\2024-12-New-Zealand\DJI_0277.mp4", true);
+        let exiftools = source_file_key("D:/Videos/2024-12-New-Zealand/DJI_0277.mp4", true);
+        assert_eq!(ours, exiftools);
+    }
+
+    #[test]
+    fn source_file_key_leaves_backslashes_alone_off_windows() {
+        // On Unix a backslash is a legal filename character, and ExifTool
+        // doesn't rewrite it there.
+        assert_eq!(source_file_key(r"/v/odd\name.mp4", false), r"/v/odd\name.mp4");
+    }
+
+    #[test]
+    fn argfile_lists_one_utf8_path_per_line_and_is_deleted_on_drop() {
+        let paths = vec![
+            PathBuf::from("/v/Ōtautahi trip/clip 1.mp4"),
+            PathBuf::from("/v/b.mov"),
+        ];
+        let argfile = TempArgFile::write(&paths).unwrap();
+        let written = std::fs::read_to_string(&argfile.path).unwrap();
+        assert_eq!(written, "/v/Ōtautahi trip/clip 1.mp4\n/v/b.mov\n");
+        let path = argfile.path.clone();
+        drop(argfile);
+        assert!(!path.exists());
+    }
 
     #[test]
     fn date_reformat_adds_iso_separators() {
